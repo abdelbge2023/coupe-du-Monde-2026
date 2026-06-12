@@ -799,6 +799,7 @@
     .hero-stat-num { font-size: 32px; }
   }
 </style>
+<base target="_blank">
 </head>
 <body>
 
@@ -1383,68 +1384,57 @@ function renderGroupMatches() {
   }).join('');
 }
 
-// ── FUSEAUX HORAIRES PAR VILLE ──
-const CITY_TZ = {
-  'Mexico City':  'America/Mexico_City',
-  'Guadalajara':  'America/Mexico_City',
-  'Los Angeles':  'America/Los_Angeles',
-  'San Francisco':'America/Los_Angeles',
-  'Seattle':      'America/Los_Angeles',
-  'Dallas':       'America/Chicago',
-  'Houston':      'America/Chicago',
-  'Kansas City':  'America/Chicago',
-  'Atlanta':      'America/New_York',
-  'Miami':        'America/New_York',
-  'Philadelphia': 'America/New_York',
-  'New York':     'America/New_York',
-  'Boston':       'America/New_York',
-  'Toronto':      'America/Toronto',
-  'Vancouver':    'America/Vancouver',
-};
+// ── FUSEAUX HORAIRES ──
+// Les horaires MATCHES sont en heure locale France (UTC+2)
+// Cette fonction convertit de UTC+2 vers le fuseau de l'utilisateur
 
-// Convertit un match (date locale stade + heure locale stade) en Date UTC
-function matchToUTC(m) {
-  var tz = CITY_TZ[m.city] || 'America/New_York';
-  var parts = m.time.split(':');
-  var h = parseInt(parts[0], 10);
-  var min = parseInt(parts[1], 10);
-  // Construire une date dans le fuseau du stade via Intl
-  var dateParts = m.date.split('-');
-  var yr = parseInt(dateParts[0], 10);
-  var mo = parseInt(dateParts[1], 10) - 1;
-  var dy = parseInt(dateParts[2], 10);
-  // Trouver l'offset UTC du fuseau à cette date en utilisant une astuce Intl
-  var probe = new Date(Date.UTC(yr, mo, dy, h, min, 0));
-  var fmt = new Intl.DateTimeFormat('en-US', {
-    timeZone: tz,
-    hour: 'numeric', minute: 'numeric', hour12: false,
-    year: 'numeric', month: '2-digit', day: '2-digit'
-  });
-  // Recalculer l'offset réel
-  var parts2 = fmt.formatToParts(probe);
-  var pMap = {};
-  parts2.forEach(function(p){ pMap[p.type] = p.value; });
-  var tzH = parseInt(pMap.hour, 10);
-  var tzMin = parseInt(pMap.minute, 10);
-  var diffH = h - tzH;
-  var diffMin = min - tzMin;
-  probe = new Date(Date.UTC(yr, mo, dy, h - diffH, min - diffMin, 0));
-  return probe;
+function matchToUserDate(m) {
+  var h = parseInt(m.time.split(':')[0], 10);
+  var min = parseInt(m.time.split(':')[1], 10);
+  var dp = m.date.split('-');
+  var yr = parseInt(dp[0], 10);
+  var mo = parseInt(dp[1], 10) - 1;
+  var dy = parseInt(dp[2], 10);
+
+  // Les données sont en UTC+2. On crée une date UTC en soustrayant 2h.
+  // Ex: 21:00 UTC+2 = 19:00 UTC
+  var utcH = h - 2;
+  var utcDy = dy;
+  var utcMo = mo;
+  var utcYr = yr;
+
+  // Gérer le dépassement d'heure négative
+  if (utcH < 0) {
+    utcH += 24;
+    utcDy -= 1;
+    // Gérer le changement de mois
+    var prevMonthDays = new Date(utcYr, utcMo, 0).getDate();
+    if (utcDy < 1) {
+      utcDy = prevMonthDays;
+      utcMo -= 1;
+      if (utcMo < 0) {
+        utcMo = 11;
+        utcYr -= 1;
+      }
+    }
+  }
+
+  return new Date(Date.UTC(utcYr, utcMo, utcDy, utcH, min, 0));
 }
 
-// Renvoie l'heure locale utilisateur formatée "HH:MM"
+// Renvoie l'heure dans le fuseau de l'utilisateur
 function localTime(m) {
-  var utc = matchToUTC(m);
-  return utc.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+  var d = matchToUserDate(m);
+  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
 }
 
-// Renvoie la date locale utilisateur "YYYY-MM-DD"
+// Renvoie la date dans le fuseau de l'utilisateur
 function localDate(m) {
-  var utc = matchToUTC(m);
-  var y = utc.getFullYear();
-  var mo = String(utc.getMonth()+1).padStart(2,'0');
-  var d = String(utc.getDate()).padStart(2,'0');
-  return y + '-' + mo + '-' + d;
+  var d = matchToUserDate(m);
+  var y = d.getFullYear();
+  var mo = String(d.getMonth() + 1).padStart(2, '0');
+  var dy = String(d.getDate()).padStart(2, '0');
+  return y + '-' + mo + '-' + dy;
 }
 
 // Fuseau local utilisateur (ex: "Europe/Paris")
@@ -1530,18 +1520,6 @@ function saveScore() {
   if (!m) return;
   m.hs = scoreH;
   m.as = scoreA;
-  saveScores();
-  recomputeStandings();
-  closeModal();
-  refreshAll();
-}
-
-function resetScore() {
-  if (modalMatchId === null) return;
-  var m = MATCHES.find(function(x){ return x.id === modalMatchId; });
-  if (!m) return;
-  m.hs = null;
-  m.as = null;
   saveScores();
   recomputeStandings();
   closeModal();
@@ -1648,7 +1626,7 @@ renderPhases();
 renderInfos();
 // Afficher le fuseau horaire détecté
 var tzSub = document.getElementById('cal-tz-sub');
-if (tzSub) tzSub.textContent = 'Tous les matchs · Horaires en heure locale ' + USER_TZ_LABEL + ' (' + USER_TZ + ')';
+if (tzSub) tzSub.textContent = 'Tous les matchs · Horaires de base en France (UTC+2), convertis dans votre fuseau horaire';
 </script>
 
 </body>
