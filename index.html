@@ -562,6 +562,23 @@
   .ko-team:last-of-type { border-bottom: none; }
   .ko-team.ko-tbd { color: var(--muted); font-style: italic; font-weight: 400; font-size: 12px; }
   .ko-flag { font-size: 16px; flex-shrink: 0; }
+  /* Équipe résolue depuis les scores de groupe */
+  .ko-card.ko-resolved { border-color: rgba(201,162,39,0.25); }
+  /* Équipe provisoire (groupe pas encore terminé) */
+  .ko-team.ko-pending { color: var(--text); opacity: 0.65; }
+  /* Badge "En cours" à côté du nom d'une équipe provisoire */
+  .ko-live-tag {
+    margin-left: auto;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    color: #f9a825;
+    background: rgba(249,168,37,0.12);
+    border: 1px solid rgba(249,168,37,0.3);
+    border-radius: 2px;
+    padding: 1px 5px;
+  }
   .ko-vs {
     text-align: center;
     font-family: 'Barlow Condensed', sans-serif;
@@ -1289,29 +1306,116 @@ function buildCalendar() {
 
 function filterMatches() { buildCalendar(); }
 
+// ── RÉSOLUTION DYNAMIQUE DU BRACKET ──
+
+// Trie les équipes d'un groupe selon pts > diff buts > buts marqués
+function getSortedGroup(grpId) {
+  const g = GROUPS.find(x => x.id === grpId);
+  if (!g) return [];
+  return [...g.teams].sort((a, b) => {
+    if (b.pts !== a.pts) return b.pts - a.pts;
+    const gdA = a.gf - a.ga, gdB = b.gf - b.ga;
+    if (gdB !== gdA) return gdB - gdA;
+    return b.gf - a.gf;
+  });
+}
+
+// Vérifie si tous les matchs d'un groupe ont un score saisi
+function isGroupComplete(grpId) {
+  return MATCHES.filter(m => m.grp === grpId).every(m => m.hs !== null && m.as !== null);
+}
+
+// Récupère le meilleur 3e parmi une liste de groupes
+// (filtre sur les groupes ayant au moins 1 match joué pour avoir des données)
+function getBest3rdFromGroups(grpList) {
+  const thirds = grpList.map(id => {
+    const sorted = getSortedGroup(id);
+    if (!sorted[2]) return null;
+    const t = sorted[2];
+    // Ne considère que si ce groupe a au moins un match joué
+    const played = MATCHES.filter(m => m.grp === id && m.hs !== null).length;
+    if (played === 0) return null;
+    return { ...t, _grp: id };
+  }).filter(Boolean);
+
+  if (!thirds.length) return null;
+  thirds.sort((a, b) => {
+    if (b.pts !== a.pts) return b.pts - a.pts;
+    const gdA = a.gf - a.ga, gdB = b.gf - b.ga;
+    if (gdB !== gdA) return gdB - gdA;
+    return b.gf - a.gf;
+  });
+  return thirds[0];
+}
+
+// Résout un label de bracket en { name, flag, confirmed } ou null
+function resolveBracketLabel(label) {
+  // 1er ou 2e d'un groupe
+  const m1 = label.match(/^1er Grp ([A-L])$/);
+  if (m1) {
+    const sorted = getSortedGroup(m1[1]);
+    if (!sorted[0] || sorted[0].pts === 0 && sorted[0].gf === 0 && MATCHES.filter(m => m.grp === m1[1] && m.hs !== null).length === 0) return null;
+    return { name: sorted[0].name, flag: sorted[0].flag, confirmed: isGroupComplete(m1[1]) };
+  }
+  const m2 = label.match(/^2e Grp ([A-L])$/);
+  if (m2) {
+    const sorted = getSortedGroup(m2[1]);
+    if (!sorted[1] || MATCHES.filter(m => m.grp === m2[1] && m.hs !== null).length === 0) return null;
+    return { name: sorted[1].name, flag: sorted[1].flag, confirmed: isGroupComplete(m2[1]) };
+  }
+  // Meilleur 3e parmi plusieurs groupes
+  const m3 = label.match(/^Meilleur 3e \(([A-L/]+)\)$/);
+  if (m3) {
+    const grps = m3[1].split('/');
+    const best = getBest3rdFromGroups(grps);
+    if (!best) return null;
+    const allComplete = grps.every(isGroupComplete);
+    return { name: best.name, flag: best.flag, confirmed: allComplete };
+  }
+  // Vainqueur / Perdant d'un match KO (pas encore résolu depuis les scores de groupe)
+  return null;
+}
+
 // ── PHASES FINALES ──
 function renderPhases() {
   const container = document.getElementById('phasesContainer');
   container.innerHTML = KO_ROUNDS.map(round => {
     const isFinal = round.id === 'final';
-    const cols = round.matches.length <= 2 ? 'repeat('+round.matches.length+', 1fr)' : 'repeat(auto-fill, minmax(280px, 1fr))';
+    const cols = round.matches.length <= 2
+      ? 'repeat('+round.matches.length+', 1fr)'
+      : 'repeat(auto-fill, minmax(280px, 1fr))';
 
     const cards = round.matches.map(m => {
-      const isTbd1 = m.t1.startsWith('Vainqueur') || m.t1.startsWith('Perdant') || m.t1.startsWith('Meilleur') || m.t1.startsWith('1er') || m.t1.startsWith('2e');
-      const isTbd2 = m.t2.startsWith('Vainqueur') || m.t2.startsWith('Perdant') || m.t2.startsWith('Meilleur') || m.t2.startsWith('1er') || m.t2.startsWith('2e');
-      return `<div class="ko-card${isFinal?' ko-final':''}">
+      const res1 = resolveBracketLabel(m.t1);
+      const res2 = resolveBracketLabel(m.t2);
+
+      // Équipe 1
+      const isTbd1 = !res1;
+      const flag1  = res1 ? res1.flag : '🏳️';
+      const name1  = res1 ? res1.name : m.t1;
+      const dim1   = res1 && !res1.confirmed ? ' ko-pending' : '';
+
+      // Équipe 2
+      const isTbd2 = !res2;
+      const flag2  = res2 ? res2.flag : '🏳️';
+      const name2  = res2 ? res2.name : m.t2;
+      const dim2   = res2 && !res2.confirmed ? ' ko-pending' : '';
+
+      return `<div class="ko-card${isFinal?' ko-final':''}${res1&&res2?' ko-resolved':''}">
         <div class="ko-card-header">
           <span class="ko-num">M${m.num}</span>
-          <span class="ko-meta">${m.date} · ${m.time} · ${m.city}</span>
+          <span class="ko-meta">${m.date} · ${m.time} ET · ${m.city}</span>
         </div>
-        <div class="ko-team${isTbd1?' ko-tbd':''}">
-          <span class="ko-flag">${isTbd1?'🏳️':'⚽'}</span>
-          <span>${m.t1}</span>
+        <div class="ko-team${isTbd1?' ko-tbd':''}${dim1}">
+          <span class="ko-flag">${flag1}</span>
+          <span>${name1}</span>
+          ${res1&&!res1.confirmed?'<span class="ko-live-tag">En cours</span>':''}
         </div>
         <div class="ko-vs">VS</div>
-        <div class="ko-team${isTbd2?' ko-tbd':''}">
-          <span class="ko-flag">${isTbd2?'🏳️':'⚽'}</span>
-          <span>${m.t2}</span>
+        <div class="ko-team${isTbd2?' ko-tbd':''}${dim2}">
+          <span class="ko-flag">${flag2}</span>
+          <span>${name2}</span>
+          ${res2&&!res2.confirmed?'<span class="ko-live-tag">En cours</span>':''}
         </div>
       </div>`;
     }).join('');
@@ -1516,6 +1620,7 @@ function refreshAll() {
   renderGroups();
   renderGroupMatches();
   buildCalendar();
+  renderPhases(); // ← mise à jour du bracket dès qu'un score est saisi
 }
 
 // ── EVENT DELEGATION GLOBALE ──
